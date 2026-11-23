@@ -240,7 +240,7 @@
         `;
 
         try {
-            const response = await fetch(`${API_URL}/items`);
+            const response = await fetch(`${API_URL}/staff/items`);
 
             if (!response.ok) {
                 throw new Error("Unable to retrieve items.");

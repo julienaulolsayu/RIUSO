@@ -1,16 +1,17 @@
 
-const {
+import {
   DynamoDBDocumentClient,
-  ScanCommand
-} = require("@aws-sdk/lib-dynamodb");
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+  ScanCommand,
+  UpdateCommand
+} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 
 const client = new DynamoDBClient({});
 const db = DynamoDBDocumentClient.from(client);
 
 const TABLE_NAME = process.env.TABLE_NAME;
 
-exports.handler = async () => {
+export const handler = async (event) => {
   try {
     if (!TABLE_NAME) {
       return response(500, {
@@ -25,25 +26,72 @@ exports.handler = async () => {
     );
 
     const items = result.Items || [];
-
-    // Make expired reservations available again.
     const now = Math.floor(Date.now() / 1000);
 
-    const updatedItems = items.map((item) => {
+    const updatedItems = [];
+
+    for (const item of items) {
       if (
         item.status === "reserved" &&
         item.reservedUntil <= now
       ) {
-        return {
-          ...item,
-          status: "available"
-        };
+        try {
+          await db.send(
+            new UpdateCommand({
+              TableName: TABLE_NAME,
+              Key: { itemId: item.itemId },
+              UpdateExpression: "SET #status = :available",
+              ConditionExpression:
+                "#status = :reserved AND reservedUntil <= :now",
+              ExpressionAttributeNames: {
+                "#status": "status"
+              },
+              ExpressionAttributeValues: {
+                ":available": "available",
+                ":reserved": "reserved",
+                ":now": now
+              }
+            })
+          );
+
+          updatedItems.push({
+            ...item,
+            status: "available"
+          });
+        } catch (error) {
+          if (error.name !== "ConditionalCheckFailedException") {
+            throw error;
+          }
+
+          updatedItems.push(item);
+        }
+      } else {
+        updatedItems.push(item);
       }
+    }
 
-      return item;
-    });
+    const routeKey = event?.routeKey;
+    const rawPath = event?.rawPath;
+    const httpPath = event?.requestContext?.http?.path;
+    const isStaffItems =
+      routeKey === "GET /staff/items" ||
+      rawPath === "/staff/items" ||
+      httpPath === "/staff/items";
 
-    return response(200, updatedItems);
+    if (isStaffItems) {
+      return response(200, updatedItems);
+    }
+
+    const publicItems = updatedItems.map((item) => ({
+      itemId: item.itemId,
+      name: item.name,
+      price: item.price,
+      photo: item.photo,
+      status: item.status,
+      soldAt: item.soldAt
+    }));
+
+    return response(200, publicItems);
 
   } catch (error) {
     console.error("List items error:", error);
